@@ -24,6 +24,8 @@ Taken and adapted from https://github.com/xdecroc/epollServ
 
 #include <tbb/concurrent_unordered_map.h>
 
+#include "cxxopts.hpp"
+
 #define BUFFERSIZE 512
 #define MAXEVENTS 2000
 
@@ -129,24 +131,16 @@ core_affinitize(int cpu)
  * clients connect using telnet localhost <port>
 **/
 
-int serverSock_init (char *port)
+int serverSock_init (unsigned short port)
 {
-  struct addrinfo hints, *res;
-  int status, sfd;
+  int sfd;
+  int status;
+  struct sockaddr_in serv_addr = {0};
+  serv_addr.sin_family = AF_INET;
+  serv_addr.sin_addr.s_addr = INADDR_ANY;
+  serv_addr.sin_port = htons(port);
 
-  memset (&hints, 0, sizeof (struct addrinfo));
-  hints.ai_family = AF_INET;  // IPV4   
-  hints.ai_socktype = SOCK_STREAM; // TCP socket 
-  hints.ai_flags = AI_PASSIVE;     // needed for serversocket
-
-  status = getaddrinfo (NULL, port, &hints, &res);  // populates res addrinfo struct ready for socket call
-  if (status != 0)
-  {
-    fprintf (stderr, "getaddrinfo: %s\n", gai_strerror (status));
-    return -1;
-  }
-     
-  sfd = socket (res->ai_family, res->ai_socktype, res->ai_protocol); // create endpoint socketFD
+  sfd = socket (AF_INET, SOCK_STREAM, 0); // create endpoint socketFD
   if (sfd == -1) {
     fprintf (stderr, "Socket error\n");
     close (sfd); 
@@ -156,53 +150,53 @@ int serverSock_init (char *port)
   int optval = 1;
   setsockopt(sfd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)); // set port reuse opt
 
-  status = bind (sfd, res->ai_addr, res->ai_addrlen); // bind addr to sfd, addr in this case is INADDR_ANY 
+  status = bind(sfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)); // bind addr to sfd, addr in this case is INADDR_ANY 
   if (status == -1)
   {
-    fprintf (stderr, "Could not bind\n");
+    fprintf(stderr, "Could not bind\n");
     return -1;      
   }  
 
-  freeaddrinfo (res);
   return sfd;
 }
 
 #define SUM_SENTIL 0
 
-int epoll_main(char* port, ReportFormat format, bool reportOnlySum, int limit);
+int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int limit);
 
 int main (int argc, char *argv[])
 {
     ReportFormat format = ReportFormat::HUMAN;
     bool reportOnlySum = false;
     int limit = -1;
+
+    cxxopts::Options options("server-bench", "epoll server benchmark");
+
+    options.add_options()
+      ("machine", "Enable machine readable output")
+      ("human", "Enable human readable output (default)")
+      ("sum-only", "Print only the summed up throughput of all connections")
+      ("limit", "Print only the summed up throughput of all connections", cxxopts::value<int>()->default_value("-1"))
+      ("port", "Port to listen on", cxxopts::value<int>())
+      ;
+    options.parse_positional("port");
     
-    if (argc < 2) {
-        fprintf (stderr, "Usage: %s [port]\n", argv[0]);
-        exit (EXIT_FAILURE);
+    options.parse(argc, argv);
+    
+    if(options.count("machine")) {
+        format = ReportFormat::MACHINE;
     }
-    if(argc >= 3) {
-        if(strcmp(argv[2], "--machine") == 0) {
-            format = ReportFormat::MACHINE;
-        }
-        else if(strcmp(argv[2], "--human") == 0) {
-            format = ReportFormat::HUMAN;
-        }
-    }
-  
-    if(argc >= 4) {
-        if(strcmp(argv[3], "--sum-only") == 0) {
-            reportOnlySum = true;
-        }
-    }
-  
-    if(argc >= 5) {
-        if(strcmp(argv[4], "--limit") == 0) {
-            limit = atoi(argv[4]);
-        }
+    else if(options.count("human")) {
+        format = ReportFormat::HUMAN;
     }
     
-    char* port = argv[1];
+    if(options.count("sum-only")) {
+        reportOnlySum = true;
+    }
+    
+    limit = options["limit"].as<int>();
+    
+    unsigned short port = (unsigned short)options["port"].as<int>();
     
     vector<future<int>> futures;
     for(int i = 0; i < GetNumCPUs(); i++) {
@@ -218,7 +212,7 @@ int main (int argc, char *argv[])
     }
 }
 
-int epoll_main(char* port, ReportFormat format, bool reportOnlySum, int limit)
+int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int limit)
 {
   int sfd, s, efd;
   struct epoll_event event;
