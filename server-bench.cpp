@@ -21,6 +21,8 @@ Taken and adapted from https://github.com/xdecroc/epollServ
 #include <sched.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 
 #include <tbb/concurrent_unordered_map.h>
 
@@ -197,6 +199,17 @@ int main (int argc, char *argv[])
     limit = options["limit"].as<int>();
     
     unsigned short port = (unsigned short)options["port"].as<int>();
+    
+    //set the hard and soft limit for number of files for this process
+    //this needs CAP_SYS_RESOURCE, so you should run this as root
+    struct rlimit resource_limit = {
+        .rlim_cur = 1048576, //soft limit
+        .rlim_max = 1048576, //hard limit
+    };
+    if(setrlimit(RLIMIT_NOFILE, &resource_limit) != 0) {
+        printf("could not set resource limit!\n");
+        exit(1);
+    }
     
     vector<future<int>> futures;
     for(int i = 0; i < GetNumCPUs(); i++) {
