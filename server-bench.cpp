@@ -17,6 +17,7 @@ Taken and adapted from https://github.com/xdecroc/epollServ
 #include <iostream>
 #include <future>
 #include <thread>
+#include <fstream>
 
 #include <sched.h>
 #include <signal.h>
@@ -190,6 +191,7 @@ int main (int argc, char *argv[])
       ("sum-only", "Print only the summed up throughput of all connections")
       ("limit", "Print only the summed up throughput of all connections", cxxopts::value<int>()->default_value("-1"))
       ("port", "Port to listen on", cxxopts::value<int>())
+      ("pid", "PID file", cxxopts::value<string>()->default_value(""))
       ;
     options.parse_positional("port");
     
@@ -204,6 +206,13 @@ int main (int argc, char *argv[])
     
     if(options.count("sum-only")) {
         reportOnlySum = true;
+    }
+    
+    if(options["pid"].as<string>().size() > 0) {
+        pid_t pid = getpid();
+        ofstream pidout(options["pid"].as<string>());
+        pidout << pid;
+        pidout.close();
     }
     
     limit = options["limit"].as<int>();
