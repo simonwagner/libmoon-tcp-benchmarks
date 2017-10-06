@@ -252,14 +252,6 @@ int main (int argc, char *argv[])
         future.wait();
     }
     
-    //close all sockets before exit
-    for(const auto& item : clientMap) {
-        int fd = item.first;
-        if(fd > 0) {
-            close(fd);
-        }
-    }
-    
     exit(0);
     return 0;
 }
@@ -472,6 +464,14 @@ int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int
 
   free (events);
   close (sfd);
+  
+  //close all sockets before exit
+  for(const auto& item : clientMap) {
+      int fd = item.first;
+      if(fd > 0) {
+          close(fd);
+      }
+  }
 
   return EXIT_SUCCESS;
 }
