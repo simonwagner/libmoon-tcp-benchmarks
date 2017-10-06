@@ -21,6 +21,7 @@ Taken and adapted from https://github.com/xdecroc/epollServ
 
 #include <sched.h>
 #include <signal.h>
+#include <sys/eventfd.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -158,11 +159,12 @@ int serverSock_init(unsigned short port) {
 
 #define SUM_SENTIL 0
 
-volatile bool quit = false;
+int quiteventfd;
+
 void sig_handler(int signo) {
     if(signo == SIGTERM) {
-        printf("received SIGTERM, shutting down...\n");
-        quit = true;
+        uint64_t counter = GetNumCPUs();
+        int ret = write(quiteventfd, &counter, 8);
     }
 }
 
@@ -230,6 +232,8 @@ int main(int argc, char* argv[]) {
         printf("error: can't handle SIGTERM\n");
     }
 
+    quiteventfd = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
+
     vector<future<int>> futures;
     for(int i = 0; i < GetNumCPUs(); i++) {
         future<int> future = async(std::launch::async, [i, port, format, reportOnlySum, limit] {
@@ -285,15 +289,31 @@ int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int
         abort();
     }
 
+    event.data.fd = quiteventfd;
+    event.events = EPOLLIN | EPOLLET;
+    s = epoll_ctl(efd, EPOLL_CTL_ADD, quiteventfd, &event); // Add server socket FD to epoll's watched list
+    if(s == -1) {
+        perror("epoll_ctl");
+        abort();
+    }
+
     /* Events buffer used by epoll_wait to list triggered events */
     events = (epoll_event*)calloc(MAXEVENTS, sizeof(event));
 
     /* The event loop */
+    bool quit = false;
     while(!quit) {
         int n, i;
 
         n = epoll_wait(efd, events, MAXEVENTS, -1); // Block until some events happen, no timeout
         for(i = 0; i < n; i++) {
+            if(events[i].data.fd == quiteventfd) {
+                uint64_t counter;
+                read(quiteventfd, &counter, 8);
+                printf("exiting epoll loop\n");
+                quit = true;
+                continue;
+            }
 
             /* Error handling */
             if((events[i].events & EPOLLERR) ||
