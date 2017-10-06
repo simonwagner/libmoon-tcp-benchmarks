@@ -19,6 +19,7 @@ Taken and adapted from https://github.com/xdecroc/epollServ
 #include <thread>
 
 #include <sched.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
@@ -164,6 +165,15 @@ int serverSock_init (unsigned short port)
 
 #define SUM_SENTIL 0
 
+volatile bool quit = false;
+void sig_handler(int signo)
+{
+    if (signo == SIGTERM) {
+        printf("received SIGTERM, shutting down...\n");
+        quit = true;
+    }
+}
+
 int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int limit);
 
 int main (int argc, char *argv[])
@@ -211,6 +221,15 @@ int main (int argc, char *argv[])
         exit(1);
     }
     
+    //shutdown cleanly when we get SIGTERM
+    struct sigaction sigaction_term;
+    sigaction_term.sa_handler = sig_handler;
+    sigemptyset (&sigaction_term.sa_mask);
+    sigaction_term.sa_flags = 0;
+    if (sigaction(SIGTERM, &sigaction_term, NULL) != 0) {
+        printf("error: can't handle SIGTERM\n");
+    }
+    
     vector<future<int>> futures;
     for(int i = 0; i < GetNumCPUs(); i++) {
         future<int> future = async(std::launch::async, [i, port, format, reportOnlySum, limit]{ 
@@ -223,6 +242,17 @@ int main (int argc, char *argv[])
     for(const auto& future: futures) {
         future.wait();
     }
+    
+    //close all sockets before exit
+    for(const auto& item : clientMap) {
+        int fd = item.first;
+        if(fd > 0) {
+            close(fd);
+        }
+    }
+    
+    exit(0);
+    return 0;
 }
 
 int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int limit)
@@ -271,7 +301,7 @@ int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int
   events = (epoll_event*) calloc (MAXEVENTS, sizeof(event));  
 
   /* The event loop */
-  while (1)
+  while (!quit)
     {
       int n, i;
 
@@ -332,7 +362,6 @@ int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int
                     }
 
                   int optval = 1;
-                  setsockopt(infd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));  // set socket for port reuse
                   
                   /* get the client's IP addr and port num */
                   s = getnameinfo (&in_addr, in_len,
