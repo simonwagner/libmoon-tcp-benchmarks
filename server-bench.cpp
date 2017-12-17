@@ -67,14 +67,14 @@ struct client_data {
         lastReportBytesSend += count;
     };
 
-    void maybeReport(ReportFormat format = HUMAN, size_t connections = 1) {
+    void maybeReport(FILE* resultfile, ReportFormat format = HUMAN, size_t connections = 1) {
         auto now = std::chrono::high_resolution_clock::now();
         if(now - lastReportTimepoint >= std::chrono::seconds(5)) {
-            report(format, connections);
+            report(resultfile, format, connections);
         }
     }
 
-    void report(ReportFormat format = HUMAN, size_t connections = 1) {
+    void report(FILE* resultfile, ReportFormat format, size_t connections) {
         std::lock_guard<std::mutex> lk(io_mutex);
 
         auto now = std::chrono::high_resolution_clock::now();
@@ -83,16 +83,14 @@ struct client_data {
             double speed = (lastReportBytesSend / duration.count()) / 1e6 * 8.0;
 
             if(connections > 1) {
-                std::cerr << "[" << Gettid() << ":" << id << "] Speed: " << speed / connections << "Mb/s/connection"
-                          << "\n";
+                fprintf(resultfile, "[%d:%d] Speed: %f Mb/s SUM\n", Gettid(), id, speed);
             } else {
-                std::cerr << "[" << Gettid() << ":" << id << "] Speed: " << speed << "Mb/s"
-                          << "\n";
+                fprintf(resultfile, "[%d:%d] Speed: %f Mb/s\n",  Gettid(), id, speed);
             }
         } else {
             auto nowSinceEpoch = std::chrono::duration_cast<std::chrono::duration<double>>(now - EPOCH);
             auto lastReportSinceEpoch = std::chrono::duration_cast<std::chrono::duration<double>>(lastReportTimepoint - EPOCH);
-            std::cerr << Gettid() << ";" << id << ";" << lastReportBytesSend << ";" << connections << ";" << lastReportSinceEpoch.count() << ";" << nowSinceEpoch.count() << "\n";
+            fprintf(resultfile, "%d;%d;%d;%lu;%f;%f\n",  Gettid(), id, lastReportBytesSend, connections, lastReportSinceEpoch.count(), nowSinceEpoch.count());
         }
 
         reset();
@@ -168,7 +166,7 @@ void sig_handler(int signo) {
     }
 }
 
-int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int limit);
+int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int limit, FILE* result_file);
 
 int main(int argc, char* argv[]) {
     ReportFormat format = ReportFormat::HUMAN;
@@ -184,7 +182,8 @@ int main(int argc, char* argv[]) {
         ("sum-only", "Print only the summed up throughput of all connections")
         ("limit", "Print only the summed up throughput of all connections", cxxopts::value<int>()->default_value("-1"))
         ("port", "Port to listen on", cxxopts::value<int>())
-        ("pid", "PID file", cxxopts::value<string>()->default_value(""));
+        ("pidfile", "PID file", cxxopts::value<string>()->default_value(""))
+        ("resultfile", "Result file", cxxopts::value<string>()->default_value("-"));
     // clang-format on
 
     options.parse_positional("port");
@@ -201,11 +200,19 @@ int main(int argc, char* argv[]) {
         reportOnlySum = true;
     }
 
-    if(options["pid"].as<string>().size() > 0) {
+    if(options["pidfile"].as<string>().size() > 0) {
         pid_t pid = getpid();
-        ofstream pidout(options["pid"].as<string>());
+        ofstream pidout(options["pidfile"].as<string>());
         pidout << pid;
         pidout.close();
+    }
+    
+    FILE* resultfile;
+    if(options["resultfile"].as<string>() != "-") {
+        resultfile = fopen(options["resultfile"].as<string>().c_str(), "w");
+    }
+    else {
+        resultfile = stderr;
     }
 
     limit = options["limit"].as<int>();
@@ -236,9 +243,9 @@ int main(int argc, char* argv[]) {
 
     vector<future<int>> futures;
     for(int i = 0; i < GetNumCPUs(); i++) {
-        future<int> future = async(std::launch::async, [i, port, format, reportOnlySum, limit] {
+        future<int> future = async(std::launch::async, [i, port, format, reportOnlySum, limit, resultfile] {
             core_affinitize(i);
-            return epoll_main(port, format, reportOnlySum, limit);
+            return epoll_main(port, format, reportOnlySum, limit, resultfile);
         });
         futures.emplace_back(move(future));
     }
@@ -246,12 +253,13 @@ int main(int argc, char* argv[]) {
     for(const auto& future : futures) {
         future.wait();
     }
-
+    
+    fclose(resultfile);
     exit(0);
     return 0;
 }
 
-int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int limit) {
+int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int limit, FILE* resultfile) {
     int sfd, s, efd;
     struct epoll_event event;
     struct epoll_event* events;
@@ -429,10 +437,10 @@ int epoll_main(unsigned short port, ReportFormat format, bool reportOnlySum, int
                 // Increment msg counter
                 if(!reportOnlySum) {
                     clientMap[events[i].data.fd].didReadBytes(sumCount);
-                    clientMap[events[i].data.fd].maybeReport(format);
+                    clientMap[events[i].data.fd].maybeReport(resultfile, format);
                 } else {
                     clientMap[SUM_SENTIL].didReadBytes(sumCount);
-                    clientMap[SUM_SENTIL].maybeReport(format, clientMap.size() - 1);
+                    clientMap[SUM_SENTIL].maybeReport(resultfile, format, clientMap.size() - 1);
                 }
 
                 if(done) {
